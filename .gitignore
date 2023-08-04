@@ -1,4 +1,4 @@
 build
-server
-client
+bin
 compile_commands.json
+.cache
