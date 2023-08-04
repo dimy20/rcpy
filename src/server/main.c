@@ -7,6 +7,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#define ERR_LOG(s) fprintf(stderr, "Error: %s\n", s)
+
 #define PORT 8080
 #define HOST "127.0.0.1"
 #define BACKLOG 64
@@ -71,5 +73,37 @@ int main(){
 }
 
 static void do_something(int client_socket){
-    printf("Connection received socket: %d!\n", client_socket);
+    char buffer[64 + 1];
+    memset(buffer, 0, sizeof(char) * 64);
+
+    ssize_t n;
+    n = read(client_socket, buffer, 64);
+    if(n < 0){
+        ERR_LOG(strerror(errno));
+        return;
+    }
+
+    buffer[n] = '\0';
+    printf("Client says: %s\n", buffer);
+
+    const char *response = "Bitch";
+    write(client_socket, response, strlen(response));
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
