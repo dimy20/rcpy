@@ -7,11 +7,14 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
-#include <cassert>
+#include <assert.h>
 
 #define BACKLOG 64
 
-bool net::socket_init(int& fd, uint32_t flags){
+bool socket_init(int *_fd, uint32_t flags){
+    assert(_fd != NULL);
+    int fd;
+
     fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if(fd < 0){
@@ -19,7 +22,7 @@ bool net::socket_init(int& fd, uint32_t flags){
         return false;
     }
 
-    if(flags & SockFlag::NON_BLOCK){
+    if(flags & SOCKET_NON_BLOCK){
         int ret, v = 1;
 
         ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &v, sizeof(int));
@@ -29,10 +32,12 @@ bool net::socket_init(int& fd, uint32_t flags){
         }
 
     }
+
+    *_fd = fd;
     return true;
 }
 
-bool net::socket_make_nonblock(int socket){
+bool socket_make_nonblock(int socket){
     errno = 0;
     int flags = fcntl(socket, F_GETFL, 0);
     if(errno){
@@ -50,7 +55,7 @@ bool net::socket_make_nonblock(int socket){
     return true;
 };
 
-bool net::socket_listen(int fd, const char *host, uint16_t port){
+bool socket_listen(int fd, const char *host, uint16_t port){
     struct sockaddr_in server_addr;
     socket_addr_init(&server_addr, host, port);
 
@@ -70,7 +75,7 @@ bool net::socket_listen(int fd, const char *host, uint16_t port){
     return true;
 };
 
-bool net::socket_addr_init(struct sockaddr_in *addr, const char *host, uint16_t port){
+bool socket_addr_init(struct sockaddr_in *addr, const char *host, uint16_t port){
     assert(addr != NULL);
     addr->sin_family = AF_INET;
     addr->sin_port = htons(port);

@@ -8,7 +8,6 @@
 #include <unistd.h>
 #include "io.h"
 #include "socket.h"
-#include <vector>
 
 #define ERR_LOG(s) fprintf(stderr, "Error: %s\n", s)
 
@@ -18,25 +17,43 @@
 
 #define MAX_MSG_SIZE 4096
 #define HEADER_SIZE 4
+#define MAX_CONNECTIONS 1024
 
 static int one_request(int client_socket);
 
-struct Server{
-    Server(){};
-    bool init();
+typedef struct Conn Conn;
+typedef struct Server Server;
 
+struct Conn{
     int fd;
+    char read_buffer[MAX_MSG_SIZE + HEADER_SIZE + 1];
+    char write_buffer[MAX_MSG_SIZE + HEADER_SIZE];
+    size_t read_buffer_size;
+    size_t write_buffer_size;
+    size_t write_buffer_sent;
 };
 
-bool Server::init(){
-    if(!net::socket_init(fd, net::SockFlag::NON_BLOCK)) return false;
-    if(!net::socket_listen(fd, HOST, PORT)) return false;
-    return true;
+struct Server{
+    int fd;
+    Conn* connections[MAX_CONNECTIONS];
+    size_t num_connections;
 };
+
+bool Server_init(Server *server){
+    if(!socket_init(&server->fd, SOCKET_NON_BLOCK)) return false;
+    memset(server->connections, 0, sizeof(Conn *));
+    return true;
+}
+
+Server server;
 
 int main(){
-    Server server;
-    if(!server.init()) return 1;
+    if(!Server_init(&server)){
+        exit(1);
+    }
+    if(!socket_listen(server.fd, HOST, PORT)){
+        exit(1);
+    }
 
     struct sockaddr_storage client_addr;
     socklen_t client_addr_len = 0;

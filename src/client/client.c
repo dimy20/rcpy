@@ -7,7 +7,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <string>
+#include <time.h>
 
 #include "io.h"
 #include "socket.h"
@@ -77,30 +77,33 @@ int query(int client_socket, const char *query){
 };
 
 const char *table = "abcdef";
-std::string rand_str(int n){
-    std::string s;
+void rand_str(char * buffer, int n){
     for(int i = 0; i < n; i++){
-        s += table[rand() % strlen(table)];
+        buffer[i] = table[rand() % strlen(table)];
     }
-    return s;
 };
 
 int main(){
     srand(time(0));
 
-    net::socket_init(client_socket, 0);
+    socket_init(&client_socket, 0);
     struct sockaddr_in server_addr;
-    net::socket_addr_init(&server_addr, SERVER_ADDR, SERVER_PORT);
+    socket_addr_init(&server_addr, SERVER_ADDR, SERVER_PORT);
 
     int ret;
     ret = connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
     if(ret < 0){
         DIE(strerror(errno));
     }
+
+    char string[51];
     // multiple requests
     for(int i = 0; i < 5; i++){
-        std::string s = rand_str(rand() % 50);
-        int32_t err = query(client_socket, s.c_str());
+        memset(string, 0, 51);
+        size_t len = rand() % 50;
+        rand_str(string, len);
+        int32_t err = query(client_socket, string);
+        string[len] = '\0';
         if(err) break;
     }
     close(client_socket);
