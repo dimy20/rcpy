@@ -14,6 +14,7 @@ static bool server_start_loop_internal(Server *server);
 static bool server_accept_conn(Server *server);
 static void server_close_conn(Server *server, Conn *conn);
 static bool server_setup_epoll_instance(Server *server);
+static bool server_update_events(Server *server);
 
 bool server_init(Server *server, const char *addr_string, uint16_t port){
     if(!socket_init(&server->fd, SOCKET_NON_BLOCK)) return false;
@@ -76,6 +77,9 @@ bool server_start_loop(Server *server){
 static bool server_start_loop_internal(Server *server){
     // main loop
     while(server->alive){
+        if(!server_update_events(server)){
+            server->alive = false;
+        }
         int num_events;
         num_events = epoll_wait(server->efd, server->events, MAX_CONNECTIONS, -1);
         if(num_events < 0){
@@ -143,3 +147,25 @@ static bool server_setup_epoll_instance(Server *server){
     memset(server->events, 0, sizeof(server->events));
     return true;
 }
+
+static bool server_update_events(Server *server){
+    struct epoll_event ev;
+    for(size_t i = 0; i < MAX_CONNECTIONS; i++){
+        Conn *conn = server->connections[i];
+        if(conn == NULL){
+            continue;
+        }
+
+        memset(&ev, 0, sizeof(ev));
+        ev.data.fd = conn->fd;
+        ev.events = conn->state == CONN_STATE_REQUEST ? EPOLLIN : EPOLLOUT;
+
+        int ret;
+        ret = epoll_ctl(server->efd, EPOLL_CTL_MOD, conn->fd, &ev);
+        if(ret < 0){
+            perror("epoll_ctl");
+            return false;
+        }
+    };
+    return true;
+};

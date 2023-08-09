@@ -19,15 +19,20 @@ typedef struct{
     size_t cap;
 }ReadBuf;
 
+typedef struct{
+    char data[MAX_MSG_SIZE + HEADER_SIZE + 1];
+    size_t sent; // How much has been sent at a given point (after one or many write calls)
+    size_t size; // The total amount of data the has to be sent.
+}WriteBuf;
+
 struct Conn{
     int fd;
     ReadBuf read_buffer;
-    char write_buffer[MAX_MSG_SIZE + HEADER_SIZE];
-    size_t write_buffer_size;
-    size_t write_buffer_sent;
+    WriteBuf write_buffer;
     ConnState state;
 };
 
 bool conn_init(Conn *conn, int fd);
 void conn_io_read_many(Conn *conn);
+void conn_io_write(Conn *conn);
 

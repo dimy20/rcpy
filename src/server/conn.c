@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/epoll.h>
 #include "socket.h"
 #include "conn.h"
 #include "error.h"
@@ -9,6 +10,7 @@
 static bool conn_process_request_message(Conn *conn);
 static void conn_cut_message(Conn *conn, size_t msg_len);
 static bool conn_io_read(Conn *conn);
+static bool conn_io_flush_write_buffer(Conn *conn);
 
 static void init_read_buffer(ReadBuf *read_buf){
     memset(read_buf->data, 0, sizeof(read_buf->data));
@@ -16,18 +18,21 @@ static void init_read_buffer(ReadBuf *read_buf){
     read_buf->cap = sizeof(read_buf->data);
 }
 
+static void init_write_buffer(WriteBuf *write_buff){
+    memset(write_buff->data, 0, sizeof(write_buff->data));
+    write_buff->size = 0;
+    write_buff->sent = 0;
+};
+
 bool conn_init(Conn *conn, int fd){
     assert(conn != NULL);
     assert(fd > 0);
 
     conn->fd = fd;
     init_read_buffer(&conn->read_buffer);
+    init_write_buffer(&conn->write_buffer);
 
-    memset(conn->write_buffer, 0, sizeof(conn->write_buffer));
-    conn->write_buffer_sent = 0;
-    conn->write_buffer_size = 0;
     conn->state = CONN_STATE_REQUEST;
-
     return socket_make_nonblock(fd);
 };
 
@@ -112,6 +117,67 @@ static void conn_cut_message(Conn *conn, size_t msg_len){
     conn->read_buffer.size = remaining_size;
 };
 
+static void conn_make_echo_response(Conn *conn, const char *msg, size_t msg_len){
+    assert(conn != NULL);
+    uint32_t len = htonl(msg_len);
+    memcpy(conn->write_buffer.data, &len, 4);
+    memcpy(conn->write_buffer.data + 4, msg, msg_len);
+    conn->write_buffer.size = 4 + msg_len;
+};
+
+void conn_io_write(Conn *conn){
+    assert(conn != NULL);
+    conn->state = CONN_STATE_RESPONSE;
+    while(conn_io_flush_write_buffer(conn));
+}
+
+/* 
+ * Tries to flush all the content in the connection's write buffer.
+ * If the return value is true this signals the caller there is still data to be sent.
+ * If the return value is false this signals the caller that it should stop retrying.
+ * The reasons for stopping are buffer fully flushed, eagain or failure.
+ */
+static bool conn_io_flush_write_buffer(Conn *conn){
+    ssize_t ret;
+    do{
+        size_t remaining_bytes = conn->write_buffer.size - conn->write_buffer.sent;
+        ret = write(conn->fd, conn->write_buffer.data, remaining_bytes);
+    }while(ret < 0 && errno == EINTR);
+
+    if(ret == 0){
+        conn->state = CONN_STATE_END;
+        return false;
+    }else if(ret < 0){
+        /* Hit EAGAIN, we have failed to flush the out buffer,
+         * Suscribe fd to EPOLLOUT.
+         * */
+        if(errno == EAGAIN || errno == EWOULDBLOCK){
+            return false;
+        }else{
+            perror("write");
+            conn->state = CONN_STATE_END;
+            return false;
+        }
+    };
+
+    assert(conn->write_buffer.sent + (size_t)ret <= conn->write_buffer.size);
+    conn->write_buffer.sent += (size_t)ret;
+
+    /* We are done sending the data, reset buffer
+     * and signal upper layer that buffer has been flushed.
+     * */
+    if(conn->write_buffer.sent == conn->write_buffer.size){
+        conn->write_buffer.sent = 0;
+        conn->write_buffer.size = 0;
+        conn->state = CONN_STATE_REQUEST;
+        return false;
+
+    }
+    
+    // Tell upper that it should try to send more.
+    return true;
+};
+
 static bool conn_process_request_message(Conn *conn){
     //Not enough data to read message length.
     if(conn->read_buffer.size < HEADER_SIZE){
@@ -141,8 +207,10 @@ static bool conn_process_request_message(Conn *conn){
     printf("Client says: %s\n", msg);
     // message processing done, remove from buffer
     conn_cut_message(conn, msg_len);
-    conn->state = CONN_STATE_REQUEST;
 
+    conn_make_echo_response(conn, msg, msg_len);
+    conn_io_write(conn);
+    return conn->state == CONN_STATE_REQUEST;
     /*
      * True return signals that we sucessfully processed a message and that 
      * we can try to process the next one, im asuming that it always succeeds to respond,
@@ -150,5 +218,4 @@ static bool conn_process_request_message(Conn *conn){
      * right now is incomplete data on buffer, which is signaled up and eventually the
      * upper layers hits eagain.
      * */
-    return true;
 };
