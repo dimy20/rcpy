@@ -22,6 +22,6 @@ struct Server{
     bool alive;
 };
 
-bool rcpy_server_init(Server *server, const char *addr_string, uint16_t port);
-void rcpy_server_quit(Server *server);
-bool rcpy_server_start_loop(Server *server);
+bool server_init(Server *server, const char *addr_string, uint16_t port);
+void server_quit(Server *server);
+bool server_start_loop(Server *server);

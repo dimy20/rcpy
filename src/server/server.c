@@ -10,32 +10,12 @@
 
 #define ARR_LEN(arr) sizeof(arr) / sizeof(arr[0])
 
-static bool rcpy_server_start_loop_internal(Server *server);
-static bool rcpy_server_accept_connection(Server *server);
+static bool server_start_loop_internal(Server *server);
+static bool server_accept_conn(Server *server);
+static void server_close_conn(Server *server, Conn *conn);
+static bool server_setup_epoll_instance(Server *server);
 
-static bool rcpy_setup_epoll_instance(Server *server){
-    server->efd = epoll_create1(0);
-
-    if(server->efd < 0){
-        ERR_LOG(strerror(errno));
-        return false;
-    }
-
-    struct epoll_event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.data.fd = server->fd;
-    ev.events = EPOLLIN;
-
-    if(epoll_ctl(server->efd, EPOLL_CTL_ADD, server->fd, &ev) < 0){
-        ERR_LOG(strerror(errno));
-        return false;
-    }
-
-    memset(server->events, 0, sizeof(server->events));
-    return true;
-}
-
-bool rcpy_server_init(Server *server, const char *addr_string, uint16_t port){
+bool server_init(Server *server, const char *addr_string, uint16_t port){
     if(!socket_init(&server->fd, SOCKET_NON_BLOCK)) return false;
 
     socket_make_nonblock(server->fd);
@@ -47,14 +27,12 @@ bool rcpy_server_init(Server *server, const char *addr_string, uint16_t port){
     server->alive = true;
 
     return socket_listen(server->fd, addr_string, port) &&
-           rcpy_setup_epoll_instance(server);
+           server_setup_epoll_instance(server);
 };
 
-void rcpy_server_quit(Server *server){
+void server_quit(Server *server){}
 
-}
-
-static bool rcpy_server_accept_connection(Server *server){
+static bool server_accept_conn(Server *server){
     int client_fd;
     client_fd = accept(server->fd, NULL, NULL);
 
@@ -64,7 +42,7 @@ static bool rcpy_server_accept_connection(Server *server){
     }
 
     Conn *new_conn = (Conn*)RCPY_MALLOC(sizeof(Conn));
-    if(!rcpy_conn_init(new_conn, client_fd)){
+    if(!conn_init(new_conn, client_fd)){
         close(client_fd);
         free(new_conn);
         return false;
@@ -90,12 +68,12 @@ static bool rcpy_server_accept_connection(Server *server){
     return true;
 };
 
-bool rcpy_server_start_loop(Server *server){
+bool server_start_loop(Server *server){
     assert(server != NULL);
-    return rcpy_server_start_loop_internal(server);
+    return server_start_loop_internal(server);
 };
 
-static bool rcpy_server_start_loop_internal(Server *server){
+static bool server_start_loop_internal(Server *server){
     // main loop
     while(server->alive){
         int num_events;
@@ -107,16 +85,61 @@ static bool rcpy_server_start_loop_internal(Server *server){
 
         for(size_t i = 0; i < num_events; i++){
             if(server->events[i].data.fd == server->fd){
-                rcpy_server_accept_connection(server);
+                server_accept_conn(server);
             }else{
                 int conn_fd = server->events[i].data.fd;
                 Conn* conn = server->connections[conn_fd];
                 assert(conn != NULL);
+
                 if(server->events[i].events & EPOLLIN){
-                    printf("Some client has read data available\n");
+                    conn_io_read_many(conn);
                 }
+
+                if(conn->state == CONN_STATE_END){
+                    server_close_conn(server, conn);
+                };
             }
         }
     };
     return true;
+}
+
+static void server_close_conn(Server *server, Conn *conn){
+    assert(server != NULL && conn != NULL);
+    assert(conn->fd > 0 && conn->fd < MAX_CONNECTIONS);
+    assert(server->connections[conn->fd] != NULL);
+
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.data.fd = conn->fd;
+
+    if(epoll_ctl(server->efd, EPOLL_CTL_DEL, conn->fd, &ev) < 0){
+        perror("epoll_ctl");
+    }
+
+    close(conn->fd);
+    server->connections[conn->fd] = NULL;
+    free(conn);
 };
+
+static bool server_setup_epoll_instance(Server *server){
+    server->efd = epoll_create1(0);
+
+    if(server->efd < 0){
+        ERR_LOG(strerror(errno));
+        return false;
+    }
+
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.data.fd = server->fd;
+    ev.events = EPOLLIN;
+
+    if(epoll_ctl(server->efd, EPOLL_CTL_ADD, server->fd, &ev) < 0){
+        ERR_LOG(strerror(errno));
+        return false;
+    }
+
+    memset(server->events, 0, sizeof(server->events));
+    return true;
+}
