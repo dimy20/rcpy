@@ -16,7 +16,7 @@ CLIENT_OBJS = $(patsubst $(SRC_DIR)/client/%.c, $(BUILD_DIR)/client/%.o, $(CLIEN
 COMMON_SRCS = $(shell find $(SRC_DIR) -maxdepth 1 -name '*.c')
 COMMON_OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(COMMON_SRCS))
 
-CFLAGS = -Wall -Werror -std=c11 -g $(foreach D, $(INCLUDE_DIRS), -I$(D))
+CFLAGS = -Wall -Werror -Wno-unused-function -std=c11 -g $(foreach D, $(INCLUDE_DIRS), -I$(D))
 LIBS = -lpthread
 
 all: server client

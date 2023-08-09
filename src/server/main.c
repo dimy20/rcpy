@@ -36,19 +36,7 @@ void print_test(struct Test *t){
 }
 
 int main(){
-    srand(time(0));
-    struct Test *tests = NULL;
-    for(int i = 0; i < 10; i++){
-        struct Test t;
-        memset(t.string, 0, sizeof(char) * 21);
-        t.x = rand() % 100;
-        make_rand_string(t.string);
-        rcpy_arr_push(tests, t);
-    }
-    for(int i = 0; i < rcpy_arr_len(tests); i++){
-        print_test(&tests[i]);
-    }
-
-    rcpy_arr_free(tests);
-    return 0;
+    rcpy_server_init(&server, HOST, PORT);
+    rcpy_server_start_loop(&server);
+    rcpy_server_quit(&server);
 }

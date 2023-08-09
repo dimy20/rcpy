@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <poll.h>
 #include <stdbool.h>
+#include <sys/epoll.h>
 #include "conn.h"
 
 #define MAX_CONNECTIONS 1024
@@ -13,11 +13,13 @@ typedef struct Server Server;
 struct Server{
     int fd;
     Conn* connections[MAX_CONNECTIONS];
-    size_t num_connections;
-    struct pollfd poll_args[MAX_CONNECTIONS + 1];
+    struct epoll_event events[MAX_CONNECTIONS];
 
+    size_t num_connections;
     char addr_str[MAX_ADDR_STRING_SIZE];
     uint16_t port;
+    int efd;
+    bool alive;
 };
 
 bool rcpy_server_init(Server *server, const char *addr_string, uint16_t port);
