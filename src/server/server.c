@@ -15,6 +15,7 @@ static bool server_accept_conn(Server *server);
 static void server_close_conn(Server *server, Conn *conn);
 static bool server_setup_epoll_instance(Server *server);
 static bool server_update_events(Server *server);
+static void server_process_events(Server *server, size_t num_events);
 
 bool server_init(Server *server, const char *addr_string, uint16_t port){
     if(!socket_init(&server->fd, SOCKET_NON_BLOCK)) return false;
@@ -74,6 +75,8 @@ bool server_start_loop(Server *server){
     return server_start_loop_internal(server);
 };
 
+
+
 static bool server_start_loop_internal(Server *server){
     // main loop
     while(server->alive){
@@ -86,24 +89,7 @@ static bool server_start_loop_internal(Server *server){
             perror("epoll_wait");
             return false;
         }
-
-        for(size_t i = 0; i < num_events; i++){
-            if(server->events[i].data.fd == server->fd){
-                server_accept_conn(server);
-            }else{
-                int conn_fd = server->events[i].data.fd;
-                Conn* conn = server->connections[conn_fd];
-                assert(conn != NULL);
-
-                if(server->events[i].events & EPOLLIN){
-                    conn_io_read_many(conn);
-                }
-
-                if(conn->state == CONN_STATE_END){
-                    server_close_conn(server, conn);
-                };
-            }
-        }
+        server_process_events(server, (size_t)num_events);
     };
     return true;
 }
@@ -168,4 +154,30 @@ static bool server_update_events(Server *server){
         }
     };
     return true;
+};
+
+static void server_process_events(Server *server, size_t num_events){
+    assert(server != NULL);
+
+    for(size_t i = 0; i < num_events; i++){
+        if(server->events[i].data.fd == server->fd){
+            server_accept_conn(server);
+        }else{
+            int conn_fd = server->events[i].data.fd;
+            Conn* conn = server->connections[conn_fd];
+            assert(conn != NULL);
+
+            if(server->events[i].events & EPOLLIN){
+                conn_io_read_many(conn);
+            }
+
+            if(server->events[i].events & EPOLLOUT){
+                conn_io_write(conn);
+            }
+
+            if(conn->state == CONN_STATE_END){
+                server_close_conn(server, conn);
+            };
+        }
+    }
 };
