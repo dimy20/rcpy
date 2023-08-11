@@ -1,10 +1,12 @@
 #pragma once
 
+#include <sys/socket.h>
 typedef struct Conn Conn;
 typedef struct Buffer Buffer;
 #include <stdio.h>
+#include <uv.h>
 
-#define MAX_MSG_SIZE 4096
+#define MAX_MSG_SIZE 32768 //32kb
 #define HEADER_SIZE 4
 
 typedef enum{
@@ -26,13 +28,12 @@ typedef struct{
 }WriteBuf;
 
 struct Conn{
-    int fd;
     ReadBuf read_buffer;
     WriteBuf write_buffer;
     ConnState state;
+    uv_tcp_t *stream;
 };
 
-bool conn_init(Conn *conn, int fd);
-void conn_io_read_many(Conn *conn);
-void conn_io_write(Conn *conn);
-
+bool conn_init(Conn *conn, uv_tcp_t *stream);
+bool conn_process_request_message(Conn *conn);
+void conn_read_incoming_data(Conn *conn, size_t nread, const uv_buf_t *uv_buf);

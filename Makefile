@@ -1,4 +1,4 @@
-CC = clang
+CC = clang++
 
 SRC_DIR = ./src
 BUILD_DIR = ./build
@@ -16,8 +16,9 @@ CLIENT_OBJS = $(patsubst $(SRC_DIR)/client/%.c, $(BUILD_DIR)/client/%.o, $(CLIEN
 COMMON_SRCS = $(shell find $(SRC_DIR) -maxdepth 1 -name '*.c')
 COMMON_OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(COMMON_SRCS))
 
-CFLAGS = -Wall -Werror -Wno-unused-function -std=c11 -g $(foreach D, $(INCLUDE_DIRS), -I$(D))
-LIBS = -lpthread
+CFLAGS = -Wall -Werror -Wno-deprecated -Wno-unused-function -std=c++20 -g $(foreach D, $(INCLUDE_DIRS), -I$(D))
+CFLGS += `pkg--config --cflags libuv`
+LIBS = -lpthread `pkg-config --libs libuv`
 
 all: server client
 

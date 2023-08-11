@@ -1,14 +1,33 @@
+#include <cstddef>
+#include <cstdio>
 #include <string.h>
 #include <server/server.h>
 #include <assert.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <queue>
+#include <uv.h>
 #include "conn.h"
 #include "socket.h"
 #include "error.h"
 
 #define ARR_LEN(arr) sizeof(arr) / sizeof(arr[0])
+#define MAX_CONNECTIONS 1024
+#define MAX_ADDR_STRING_SIZE 256
+
+typedef struct Server Server;
+
+struct Server{
+    Conn* connections[MAX_CONNECTIONS];
+    size_t num_connections;
+    char addr_str[MAX_ADDR_STRING_SIZE];
+    uint16_t port;
+    bool alive;
+    uv_tcp_t stream;
+};
+
+static Server *server;
 
 static bool server_start_loop_internal(Server *server);
 static bool server_accept_conn(Server *server);
@@ -16,11 +35,11 @@ static void server_close_conn(Server *server, Conn *conn);
 static bool server_setup_epoll_instance(Server *server);
 static bool server_update_events(Server *server);
 static void server_process_events(Server *server, size_t num_events);
+static bool server_init_uv(Server *server);
 
-bool server_init(Server *server, const char *addr_string, uint16_t port){
-    if(!socket_init(&server->fd, SOCKET_NON_BLOCK)) return false;
+bool server_init(const char *addr_string, uint16_t port){
+    server = (Server *)RCPY_MALLOC(sizeof(Server));
 
-    socket_make_nonblock(server->fd);
     server->num_connections = 0;
     memset(server->connections, 0, sizeof(server->connections));
     
@@ -28,156 +47,169 @@ bool server_init(Server *server, const char *addr_string, uint16_t port){
     server->port = port;
     server->alive = true;
 
-    return socket_listen(server->fd, addr_string, port) &&
-           server_setup_epoll_instance(server);
+    return server_init_uv(server);
 };
 
-void server_quit(Server *server){}
+static void on_conn_closed(uv_handle_t* handle){
+    free(handle);
+}
 
-static bool server_accept_conn(Server *server){
-    int client_fd;
-    client_fd = accept(server->fd, NULL, NULL);
+static void alloc_cb(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
+    assert(handle != NULL);
+    assert(buf != NULL);
+    buf->base = (char *)RCPY_MALLOC(suggested_size);
+    buf->len = suggested_size;
+}
 
-    if(client_fd < 0){
-        perror("accept");
+static void on_conn_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf){
+    assert(stream != NULL && buf != NULL);
+
+    Conn *conn = (Conn*)stream->data;
+    assert(conn != NULL);
+
+    if(nread == 0){ // EAGAIN?
+        return;
+    }else if(nread < 0){
+        if(nread == UV_EOF){
+            fprintf(stderr, "%s\n", uv_strerror(nread));
+        }else{
+            UV_ERR_LOG("on_conn_read", nread);
+        }
+        uv_close((uv_handle_t*)stream, on_conn_closed);
+    }else{
+        conn_read_incoming_data(conn, (size_t)nread, buf);
+        free(buf->base);
+        if(conn->state == CONN_STATE_END){
+            //close conn
+        }
+    }
+};
+
+static Conn * server_find_empty_spot_or_push(Server *server, int * at){
+    int empty_spot = -1;
+    for(size_t i = 0; i < server->num_connections; i++){
+        if(server->connections[i] == NULL){
+            empty_spot = i;
+        }
+    }
+    Conn *conn;
+    if(empty_spot != -1){
+        *at = empty_spot;
+        conn = server->connections[empty_spot];
+    }else{
+        *at = server->num_connections;
+        conn = server->connections[server->num_connections++];
+    }
+
+    conn = (Conn*)RCPY_MALLOC(sizeof(Conn));
+    return conn;
+}
+
+static void on_new_connection(uv_stream_t* server_stream, int status){
+    Server *server = (Server*)server_stream->data;
+    assert(server != NULL);
+    if(status < 0){
+        UV_ERR_LOG("on_new_connection", status);
+        return;
+    }
+
+    if(server->num_connections >= MAX_CONNECTIONS){
+        fprintf(stderr, "Error: Maximum connections exceeded, cant accept new conneciton\n");
+        uv_loop_close(uv_default_loop());
+        return;
+    }
+
+    uv_tcp_t *client;
+    client = (uv_tcp_t*)RCPY_MALLOC(sizeof(uv_tcp_t));
+
+    int ret;
+    if((ret = uv_tcp_init(uv_default_loop(), client)) < 0){
+        UV_ERR_LOG("uv_tcp_init", ret);
+        return;
+    }
+
+    if((ret = uv_accept(server_stream, (uv_stream_t*)client)) < 0){
+        UV_ERR_LOG("uv_accept", ret);
+        free(client);
+        return;
+    };
+
+    LOG("New connection");
+
+    //TODO: pass this down to Conn
+    struct sockaddr_storage peer_name;
+    int len =  sizeof(peer_name);
+    
+    if((ret = uv_tcp_getpeername(client, (struct sockaddr*)&peer_name, &len)) < 0){
+        UV_ERR_LOG("uv_tcp_getpeername", ret);
+        free(client);
+        return;
+    }
+
+    int at;
+    Conn *conn = server_find_empty_spot_or_push(server, &at);
+    conn_init(conn, client);
+
+    if((ret = uv_read_start((uv_stream_t*)client, alloc_cb, on_conn_read)) < 0){
+        UV_ERR_LOG("uv_read_start", ret);
+        free(client);
+        free(conn);
+        server->connections[at] = NULL;
+    }
+}
+
+static bool server_init_uv(Server *server){
+    int ret;
+    if((ret = uv_tcp_init(uv_default_loop(), &server->stream)) < 0){
+        UV_ERR_LOG("uv_tcp_init", ret);
+        return false;
+    };
+
+    struct sockaddr_in server_address;
+    if((ret = uv_ip4_addr(server->addr_str, server->port, &server_address)) < 0){
+        UV_ERR_LOG("uv_ip4_addr", ret);
         return false;
     }
 
-    Conn *new_conn = (Conn*)RCPY_MALLOC(sizeof(Conn));
-    if(!conn_init(new_conn, client_fd)){
-        close(client_fd);
-        free(new_conn);
+    if((ret = uv_tcp_bind(&server->stream, (const struct sockaddr*)&server_address, 0)) < 0){
+        UV_ERR_LOG("uv_tcp_bind", ret);
         return false;
     }
-
-    if(client_fd >= ARR_LEN(server->connections)){
-        LOG("maximun number of connections exceeded");
-        return false;
-    }
-
-    // register fd
-    struct epoll_event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.data.fd = client_fd;
-    ev.events |= EPOLLIN;
-
-    if(epoll_ctl(server->efd, EPOLL_CTL_ADD, client_fd, &ev) < 0){
-        perror("epoll_ctl");
-        return false;
-    }
-
-    server->connections[client_fd] = new_conn;
+    server->stream.data = server;
     return true;
-};
+}
 
-bool server_start_loop(Server *server){
+void server_quit(){
+    for(size_t i = 0; i < server->num_connections; i++){
+        if(server->connections[i] != NULL){
+            Conn *conn = server->connections[i];
+            free(conn->stream);
+            free(conn);
+        };
+    }
+    free(server);
+}
+
+bool server_start_loop(){
     assert(server != NULL);
     return server_start_loop_internal(server);
 };
 
-
-
 static bool server_start_loop_internal(Server *server){
-    // main loop
-    while(server->alive){
-        if(!server_update_events(server)){
-            server->alive = false;
-        }
-        int num_events;
-        num_events = epoll_wait(server->efd, server->events, MAX_CONNECTIONS, -1);
-        if(num_events < 0){
-            perror("epoll_wait");
-            return false;
-        }
-        server_process_events(server, (size_t)num_events);
-    };
-    return true;
+    int ret;
+    if((ret = uv_listen((uv_stream_t*)&server->stream, 10, on_new_connection)) < 0){
+        UV_ERR_LOG("uv_listen", ret);
+        return false;
+    }
+    if((ret = uv_run(uv_default_loop(), UV_RUN_DEFAULT)) < 0){
+        UV_ERR_LOG("uv_run", ret);
+        return false;
+    }
+    return uv_loop_close(uv_default_loop());
 }
 
 static void server_close_conn(Server *server, Conn *conn){
     assert(server != NULL && conn != NULL);
-    assert(conn->fd > 0 && conn->fd < MAX_CONNECTIONS);
-    assert(server->connections[conn->fd] != NULL);
-
-    struct epoll_event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.data.fd = conn->fd;
-
-    if(epoll_ctl(server->efd, EPOLL_CTL_DEL, conn->fd, &ev) < 0){
-        perror("epoll_ctl");
-    }
-
-    close(conn->fd);
-    server->connections[conn->fd] = NULL;
+    uv_close((uv_handle_t *)conn->stream, on_conn_closed);
     free(conn);
-};
-
-static bool server_setup_epoll_instance(Server *server){
-    server->efd = epoll_create1(0);
-
-    if(server->efd < 0){
-        ERR_LOG(strerror(errno));
-        return false;
-    }
-
-    struct epoll_event ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.data.fd = server->fd;
-    ev.events = EPOLLIN;
-
-    if(epoll_ctl(server->efd, EPOLL_CTL_ADD, server->fd, &ev) < 0){
-        ERR_LOG(strerror(errno));
-        return false;
-    }
-
-    memset(server->events, 0, sizeof(server->events));
-    return true;
-}
-
-static bool server_update_events(Server *server){
-    struct epoll_event ev;
-    for(size_t i = 0; i < MAX_CONNECTIONS; i++){
-        Conn *conn = server->connections[i];
-        if(conn == NULL){
-            continue;
-        }
-
-        memset(&ev, 0, sizeof(ev));
-        ev.data.fd = conn->fd;
-        ev.events = conn->state == CONN_STATE_REQUEST ? EPOLLIN : EPOLLOUT;
-
-        int ret;
-        ret = epoll_ctl(server->efd, EPOLL_CTL_MOD, conn->fd, &ev);
-        if(ret < 0){
-            perror("epoll_ctl");
-            return false;
-        }
-    };
-    return true;
-};
-
-static void server_process_events(Server *server, size_t num_events){
-    assert(server != NULL);
-
-    for(size_t i = 0; i < num_events; i++){
-        if(server->events[i].data.fd == server->fd){
-            server_accept_conn(server);
-        }else{
-            int conn_fd = server->events[i].data.fd;
-            Conn* conn = server->connections[conn_fd];
-            assert(conn != NULL);
-
-            if(server->events[i].events & EPOLLIN){
-                conn_io_read_many(conn);
-            }
-
-            if(server->events[i].events & EPOLLOUT){
-                conn_io_write(conn);
-            }
-
-            if(conn->state == CONN_STATE_END){
-                server_close_conn(server, conn);
-            };
-        }
-    }
 };

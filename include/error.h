@@ -16,3 +16,8 @@
         }                                     \
         mem;                                  \
     })
+
+#define UV_ERR_LOG(s, r) do{ \
+    fprintf(stderr, "Error %s: %s\n", s, uv_strerror(r)); \
+}while(0);
+
