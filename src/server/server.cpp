@@ -51,7 +51,10 @@ bool server_init(const char *addr_string, uint16_t port){
 };
 
 static void on_conn_closed(uv_handle_t* handle){
+    assert(handle != NULL && handle->data);
+    Conn *conn = (Conn *)handle->data;
     free(handle);
+    free(conn);
 }
 
 static void alloc_cb(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
@@ -75,17 +78,19 @@ static void on_conn_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf
         }else{
             UV_ERR_LOG("on_conn_read", nread);
         }
-        uv_close((uv_handle_t*)stream, on_conn_closed);
+        server_close_conn(server, conn);
     }else{
         conn_read_incoming_data(conn, (size_t)nread, buf);
-        free(buf->base);
         if(conn->state == CONN_STATE_END){
-            //close conn
+            server_close_conn(server, conn);
         }
     }
+    free(buf->base);
 };
 
 static Conn * server_find_empty_spot_or_push(Server *server, int * at){
+    assert(server->num_connections < MAX_CONNECTIONS);
+
     int empty_spot = -1;
     for(size_t i = 0; i < server->num_connections; i++){
         if(server->connections[i] == NULL){
@@ -104,6 +109,16 @@ static Conn * server_find_empty_spot_or_push(Server *server, int * at){
     conn = (Conn*)RCPY_MALLOC(sizeof(Conn));
     return conn;
 }
+
+static bool server_add_conn(Server * server, Conn *conn){
+    if(server->num_connections > MAX_CONNECTIONS){
+        return false;
+    }
+
+    assert(server->connections[conn->fd] == NULL);
+    server->connections[conn->fd] = conn;
+    return true;
+};
 
 static void on_new_connection(uv_stream_t* server_stream, int status){
     Server *server = (Server*)server_stream->data;
@@ -125,6 +140,7 @@ static void on_new_connection(uv_stream_t* server_stream, int status){
     int ret;
     if((ret = uv_tcp_init(uv_default_loop(), client)) < 0){
         UV_ERR_LOG("uv_tcp_init", ret);
+        free(client);
         return;
     }
 
@@ -146,15 +162,20 @@ static void on_new_connection(uv_stream_t* server_stream, int status){
         return;
     }
 
-    int at;
-    Conn *conn = server_find_empty_spot_or_push(server, &at);
-    conn_init(conn, client);
+    Conn *conn;
+    conn = (Conn*)RCPY_MALLOC(sizeof(Conn));
+    if(!conn_init(conn, client)){
+        free(client);
+        free(conn);
+        return;
+    }
+    assert(server_add_conn(server, conn));
 
     if((ret = uv_read_start((uv_stream_t*)client, alloc_cb, on_conn_read)) < 0){
         UV_ERR_LOG("uv_read_start", ret);
-        free(client);
+        server->connections[conn->fd] = NULL;
         free(conn);
-        server->connections[at] = NULL;
+        free(client);
     }
 }
 
@@ -182,9 +203,7 @@ static bool server_init_uv(Server *server){
 void server_quit(){
     for(size_t i = 0; i < server->num_connections; i++){
         if(server->connections[i] != NULL){
-            Conn *conn = server->connections[i];
-            free(conn->stream);
-            free(conn);
+            server_close_conn(server, server->connections[i]);
         };
     }
     free(server);
@@ -210,6 +229,6 @@ static bool server_start_loop_internal(Server *server){
 
 static void server_close_conn(Server *server, Conn *conn){
     assert(server != NULL && conn != NULL);
+    server->connections[conn->fd] = NULL;
     uv_close((uv_handle_t *)conn->stream, on_conn_closed);
-    free(conn);
 };

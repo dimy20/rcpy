@@ -6,8 +6,13 @@ typedef struct Buffer Buffer;
 #include <stdio.h>
 #include <uv.h>
 
+#include <vector>
+#include <string>
+
 #define MAX_MSG_SIZE 32768 //32kb
 #define HEADER_SIZE 4
+#define MAX_CMDS 128
+#define MAX_CMDS_STRING_SIZE 256
 
 typedef enum{
     CONN_STATE_REQUEST,
@@ -27,11 +32,17 @@ typedef struct{
     size_t size; // The total amount of data the has to be sent.
 }WriteBuf;
 
+struct Response{
+    uint32_t status;
+    std::string response_string;
+};
+
 struct Conn{
     ReadBuf read_buffer;
     WriteBuf write_buffer;
     ConnState state;
     uv_tcp_t *stream;
+    uv_os_fd_t fd;
 };
 
 bool conn_init(Conn *conn, uv_tcp_t *stream);
